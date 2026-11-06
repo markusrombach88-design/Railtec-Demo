@@ -11,6 +11,18 @@ from docx import Document
 
 st.set_page_config(page_title="RailTecSol", page_icon="icon.png", layout="centered")
 
+import base64
+from pathlib import Path
+
+icon_data = base64.b64encode(
+    Path("apple-touch-icon.png").read_bytes()
+).decode()
+
+st.html(
+    f'<link rel="apple-touch-icon" href="data:image/png;base64,{icon_data}">'
+)
+
+
 VEHICLES = ["BCM61", "Bvcmz 248.5", "WLABmz", "Andere / Allgemein"]
 DEMO = [
     {"id":"DEMO-001","name":"BMA – Ausgangsstörung (DEMO)","vehicle":"BCM61","revision":"Demo","pages":["Fiktive Beispieldaten. Eine BMA-Ausgangsstörung kann auf einen unterbrochenen Ausgangskreis hinweisen. Keine Prüfanweisung und keine Freigabe."]},
