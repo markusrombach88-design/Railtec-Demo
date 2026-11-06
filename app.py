@@ -9,7 +9,7 @@ import streamlit as st
 from pypdf import PdfReader
 from docx import Document
 
-st.set_page_config(page_title="RailTech AI", page_icon="🚆", layout="centered")
+st.set_page_config(page_title="RailTecSol", page_icon="icon.png", layout="centered")
 
 VEHICLES = ["BCM61", "Bvcmz 248.5", "WLABmz", "Andere / Allgemein"]
 DEMO = [
