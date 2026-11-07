@@ -204,5 +204,4 @@ with t_info:
     st.write("Für den späteren Kollegeneinsatz nötig: Anmeldung, Rollen, persistenter Speicher, Zugriffsprüfung, Freigabeworkflow, Audit-Protokoll und Datenschutzprüfung.")
 
 st.divider()
-st.subheader("📚 Technische Wissensdatenbank")
 render_knowledge_base()
