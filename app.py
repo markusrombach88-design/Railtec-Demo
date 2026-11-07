@@ -6,6 +6,8 @@ import re
 from datetime import datetime, timezone
 
 import streamlit as st
+from railtec_knowledge import render_knowledge_base
+
 from pypdf import PdfReader
 from docx import Document
 
@@ -200,3 +202,7 @@ with t_info:
     st.write("Die Anwendung ist öffentlich erreichbar. Es gibt noch keine Benutzerkonten oder dauerhafte Datenbank. Hochgeladene Dateien und Störungen liegen nur im Sitzungsspeicher; Streamlit kann Sitzungen jederzeit beenden.")
     st.write("Die KI sendet die Frage und passende Textauszüge an den konfigurierten API-Anbieter. Deshalb ausschließlich fiktive oder freigegebene Testdaten verwenden.")
     st.write("Für den späteren Kollegeneinsatz nötig: Anmeldung, Rollen, persistenter Speicher, Zugriffsprüfung, Freigabeworkflow, Audit-Protokoll und Datenschutzprüfung.")
+
+st.divider()
+st.subheader("📚 Technische Wissensdatenbank")
+render_knowledge_base()
