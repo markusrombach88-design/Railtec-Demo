@@ -1,15 +1,3 @@
-"""RailTecSol 0.3: searchable technical manuals, drop-in Streamlit module."""
-from __future__ import annotations
-import hashlib
-import io
-import os
-import re
-from pathlib import Path
-from collections import Counter
-import math
-import streamlit as st
-from pypdf import PdfReader
-from docx import Document
 
 BASE = Path(__file__).resolve().parent
 MANUALS = BASE / 'manuals'
