@@ -188,17 +188,29 @@ if not st.session_state.access_token:
         password = st.text_input("Passwort", type="password")
         submit = st.form_submit_button("Anmelden")
 
+    
     if submit:
         try:
-            data = login(email, password)
+            data = login(email.strip(), password)
             st.session_state.access_token = data["access_token"]
             st.session_state.refresh_token = data["refresh_token"]
             st.session_state.user_id = data["user"]["id"]
             st.rerun()
-        except requests.RequestException:
-            st.error("Anmeldung fehlgeschlagen. Zugangsdaten prüfen.")
 
-    st.stop()
+        except requests.HTTPError as exc:
+            status = exc.response.status_code
+            try:
+                error_code = exc.response.json().get("error_code", "")
+            except ValueError:
+                error_code = ""
+
+            st.error(f"Supabase-Fehler: HTTP {status}")
+            if error_code:
+                st.code(error_code)
+
+        except requests.RequestException:
+            st.error("Verbindung zu Supabase fehlgeschlagen.")
+```
 
 
 with st.sidebar:
