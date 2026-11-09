@@ -210,7 +210,6 @@ if not st.session_state.access_token:
 
         except requests.RequestException:
             st.error("Verbindung zu Supabase fehlgeschlagen.")
-```
 
 
 with st.sidebar:
