@@ -1,4 +1,4 @@
-"""RailTecSol 0.6 – Supabase login, private documents, AI research."""
+from railtec_ai_07 import render_ai_assistant
 import io
 import re
 import uuid
