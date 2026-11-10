@@ -608,20 +608,53 @@ with tab_diag:
             show_research(question, d_vehicle if d_vehicle in [d.get('vehicle') for d in documents()] else "Alle")
 
 with tab_brake:
-    st.subheader("Bremsen-Assistent")
-    st.caption("KE-Bremse, G/P, HLL/HBL, Bremszylinder, Wiegeventile und Bremsproben.")
-    st.info("HLL = Hauptluftleitung · HBL = Hauptluftbehälterleitung. Werte und zulässige Toleranzen sind fahrzeugabhängig.")
-    with st.form("brake_form"):
-        b_vehicle = st.text_input("Fahrzeug / Bremsbauart (optional)")
-        b_topic = st.selectbox("Thema", ["KE-Steuerventil", "HLL / HBL", "Bremszylinder", "Wiegeventil / Lastabbremsung", "G/P", "Bremsprobe", "Anderes"])
-        b_question = st.text_area("Frage oder Messwerte (mit Einheit)")
-        b_submit = st.form_submit_button("Bremsenfrage recherchieren")
-    if b_submit:
-        if not b_question.strip():
-            st.warning("Bitte eine Frage eingeben.")
-        else:
-            show_research(f"Bremstechnik an Schienenfahrzeugen. Fahrzeug: {b_vehicle or 'unbekannt'}. Thema: {b_topic}. "
-                          f"Frage: {b_question}. Keine Prüfgrenzwerte ohne fahrzeugspezifische Quelle.")
+    st.subheader("Bremsprüfungs-Generator")
+    st.caption("Fahrzeug- und Eingriffsdaten strukturiert erfassen · MI-8 Transformer BSK")
+    st.warning("Prüfart 1a / 1b / 2 / 3 derzeit NICHT bestimmbar: Die freigegebene Zuordnungsmatrix und ihr Gültigkeitsbereich fehlen. Keine KI-Schätzung und keine Freigabe.")
+    with st.form("brake_generator_v21", clear_on_submit=False):
+        st.markdown("#### Fahrzeug")
+        col1, col2 = st.columns(2)
+        with col1:
+            bg_type = st.selectbox("Fahrzeugart", ["Reisezugwagen", "Güterwagen", "Triebfahrzeug / Triebzug", "Andere"])
+            bg_series = st.text_input("Baureihe (falls bekannt)", placeholder="Noch unbekannt")
+            bg_number = st.text_input("Wagennummer (optional)")
+            bg_brake = st.selectbox("Bremsbauart", ["KE-GP-A", "KE-GP", "Andere", "Unbekannt"])
+            bg_cyl = st.selectbox("Bremszylinder", ["2", "1", "4", "Andere", "Unbekannt"])
+        with col2:
+            bg_friction = st.selectbox("Betriebsbremse", ["Unbekannt", "Scheibenbremse", "Klotzbremse", "Kombinierte Ausführung"])
+            bg_parking = st.selectbox("Feststellbremse", ["Unbekannt", "Handbremse", "Federspeicherbremse", "Keine", "Andere"])
+            bg_load = st.selectbox("Lastregelung", ["Stufenlos (Ausführung unbekannt)", "Pneumatisch über Wiegeventile", "Elektronisch", "Andere", "Unbekannt"])
+            bg_bogies = st.selectbox("Drehgestelle", ["Unbekannt", "2", "1", "Andere"])
+            bg_extra = st.selectbox("Weitere Bremsausrüstung", ["Unbekannt", "ep-Bremse", "Magnetschienenbremse (Mg)", "ep und Mg", "Keine", "Andere"])
+        st.markdown("#### Eingriff und Prüfgrundlage")
+        bg_device = st.selectbox("Prüfgerät", ["Knorr-Bremse MI-8 Transformer BSK", "Anderes / unbekannt"])
+        bg_reason = st.selectbox("Prüfanlass", ["Nach Austausch eines Bremsbauteils", "Regelmäßige Prüfung", "Nach Instandsetzung", "Nach Bremsstörung", "Anderer / unbekannt"])
+        bg_part = st.selectbox("Betroffenes Bauteil", ["KE-Steuerventil (komplett)", "Bremszylinder", "Wiegeventil / Lastregelung", "Druckluftleitung", "Bremsgestänge", "Andere / mehrere", "Unbekannt"])
+        bg_work = st.selectbox("Art der Arbeit", ["Komplettes Bauteil gegen Ersatzbauteil getauscht", "Ausgebaut, überholt und wieder eingebaut", "Teilkomponente ersetzt", "Mehrere Bauteile bearbeitet", "Unbekannt"])
+        bg_level = st.selectbox("Instandhaltungsstufe", ["Unbekannt", "Br 1", "Br 2", "Br 3", "Andere"])
+        bg_source = st.selectbox("Prüfmatrix / Vorschrift", ["MI-8-Prüfmatrix vorhanden, derzeit nicht zugänglich", "Fahrzeugspezifische Prüfvorschrift vorhanden", "Arbeitsanweisung vorhanden", "Keine Unterlagen", "Unbekannt"])
+        bg_doc = st.text_input("Vorschriftennummer und Revision (falls bekannt)")
+        bg_notes = st.text_area("Weitere Angaben (optional)", height=85)
+        bg_submit = st.form_submit_button("Daten prüfen und Erfassungsblatt erstellen", use_container_width=True)
+    if bg_submit:
+        fields = {
+            "Fahrzeugart": bg_type, "Baureihe": bg_series or "Unbekannt", "Wagennummer": bg_number or "Nicht erfasst",
+            "Bremsbauart": bg_brake, "Bremszylinder": bg_cyl, "Betriebsbremse": bg_friction,
+            "Feststellbremse": bg_parking, "Lastregelung": bg_load, "Drehgestelle": bg_bogies,
+            "Zusatzausrüstung": bg_extra, "Prüfgerät": bg_device, "Prüfanlass": bg_reason,
+            "Bauteil": bg_part, "Eingriff": bg_work, "Instandhaltungsstufe": bg_level,
+            "Prüfmatrix": bg_source, "Vorschrift / Revision": bg_doc or "Nicht bekannt",
+            "Weitere Angaben": bg_notes or "Keine", "Prüfart": "NICHT BESTIMMBAR – keine freigegebene Prüfmatrix hinterlegt",
+        }
+        st.session_state["brake_generator_last"] = fields
+    if "brake_generator_last" in st.session_state:
+        fields = st.session_state["brake_generator_last"]
+        st.error("ERGEBNIS: Prüfart nicht bestimmbar. Vor der Durchführung muss die gültige Prüfmatrix für Fahrzeug, Eingriff und Prüfgerät fachlich geprüft werden.")
+        st.markdown("#### Erfassungsblatt")
+        st.table([{"Merkmal": k, "Angabe": v} for k, v in fields.items()])
+        export = "RailPilot AI – Bremsprüfungs-Generator\n" + "\n".join(f"{k}: {v}" for k, v in fields.items())
+        st.download_button("Erfassungsblatt als TXT herunterladen", data=export.encode("utf-8"), file_name="bremspruefung_erfassung.txt", mime="text/plain")
+        st.info("Nächster Schritt: gültige MI-8-Prüfmatrix mit Dokumentennummer, Revision, Fahrzeug-Gültigkeitsbereich und Prüfart-Zuordnung bereitstellen. Eine Auswahl wird erst nach fachlich freigegebener Regelimplementierung möglich.")
 
 with tab_photo:
     st.subheader("Fotoanalyse")
