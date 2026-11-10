@@ -1,4 +1,4 @@
-from railtec_ai_08 import render_ai_assistant
+from railtec_ai_09 import render_ai_assistant
 import io
 import re
 import uuid
