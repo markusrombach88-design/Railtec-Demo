@@ -2,6 +2,7 @@
 import io
 import re
 import uuid
+from urllib.parse import quote
 
 import requests
 import streamlit as st
@@ -14,38 +15,29 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("🚆 RailTecSol")
-st.caption("Version 0.4 · Private technische Wissensdatenbank")
-
 URL = st.secrets.get("SUPABASE_URL", "").rstrip("/")
 KEY = st.secrets.get("SUPABASE_KEY", "")
 BUCKET = "rail-manuals"
+
+st.title("🚆 RailTecSol")
+st.caption("Version 0.4.1 · Private technische Wissensdatenbank")
 
 if not URL or not KEY:
     st.error("Supabase-Zugangsdaten fehlen in Streamlit Secrets.")
     st.stop()
 
+if not URL.startswith("https://") or not URL.endswith(".supabase.co"):
+    st.error("SUPABASE_URL muss direkt auf .supabase.co enden.")
+    st.stop()
+
 
 def headers(token=None, content_type="application/json"):
-    result = {
-        "apikey": KEY,
-        "Content-Type": content_type,
-    }
+    h = {"apikey": KEY}
+    if content_type:
+        h["Content-Type"] = content_type
     if token:
-        result["Authorization"] = f"Bearer {token}"
-    return result
-
-
-def api(method, path, token=None, **kwargs):
-    response = requests.request(
-        method,
-        URL + path,
-        headers=headers(token),
-        timeout=30,
-        **kwargs,
-    )
-    response.raise_for_status()
-    return response.json() if response.content else None
+        h["Authorization"] = f"Bearer {token}"
+    return h
 
 
 def login(email, password):
@@ -57,6 +49,11 @@ def login(email, password):
     )
     response.raise_for_status()
     return response.json()
+
+
+def clear_session():
+    for key in ("access_token", "refresh_token", "user_id"):
+        st.session_state.pop(key, None)
 
 
 def refresh_session():
@@ -75,27 +72,64 @@ def refresh_session():
         data = response.json()
         st.session_state.access_token = data["access_token"]
         st.session_state.refresh_token = data["refresh_token"]
+        st.session_state.user_id = data["user"]["id"]
         return True
-    except requests.RequestException:
+    except (requests.RequestException, KeyError, ValueError):
+        clear_session()
         return False
 
 
+def current_user():
+    token = st.session_state.get("access_token")
+    if not token:
+        return None
+
+    try:
+        response = requests.get(
+            URL + "/auth/v1/user",
+            headers=headers(token),
+            timeout=20,
+        )
+        if response.status_code == 401:
+            if not refresh_session():
+                return None
+            response = requests.get(
+                URL + "/auth/v1/user",
+                headers=headers(st.session_state.access_token),
+                timeout=20,
+            )
+        response.raise_for_status()
+        user = response.json()
+        st.session_state.user_id = user["id"]
+        return user
+    except (requests.RequestException, ValueError, KeyError):
+        return None
+
+
 def authorized_request(method, path, **kwargs):
+    content_type = kwargs.pop("content_type", "application/json")
+
     for attempt in range(2):
         token = st.session_state.get("access_token")
+        if not token:
+            raise RuntimeError("Nicht angemeldet.")
+
         response = requests.request(
             method,
             URL + path,
-            headers=headers(token, kwargs.pop("content_type", "application/json")),
+            headers=headers(token, content_type),
             timeout=60,
             **kwargs,
         )
+
         if response.status_code == 401 and attempt == 0:
             if refresh_session():
                 continue
+
         response.raise_for_status()
         return response
-    raise RuntimeError("Anmeldung abgelaufen.")
+
+    raise RuntimeError("Sitzung abgelaufen.")
 
 
 def extract_pages(filename, data):
@@ -104,13 +138,12 @@ def extract_pages(filename, data):
     if extension == "pdf":
         reader = PdfReader(io.BytesIO(data))
         if reader.is_encrypted:
-            raise ValueError("Verschlüsselte PDFs werden nicht unterstützt.")
+            raise ValueError("Verschlüsselte PDF nicht unterstützt.")
         if len(reader.pages) > 80:
-            raise ValueError("Maximal 80 Seiten pro PDF.")
-        pages = [
-            (page.extract_text() or "").strip()
-            for page in reader.pages
-        ]
+            raise ValueError("Maximal 80 Seiten.")
+        pages = [(page.extract_text() or "").strip()
+                 for page in reader.pages]
+
     elif extension == "docx":
         doc = Document(io.BytesIO(data))
         text = "\n".join(p.text for p in doc.paragraphs)
@@ -118,10 +151,12 @@ def extract_pages(filename, data):
             for row in table.rows:
                 text += "\n" + " | ".join(c.text for c in row.cells)
         pages = [text.strip()]
+
     elif extension == "txt":
         pages = [data.decode("utf-8-sig", errors="replace")]
+
     else:
-        raise ValueError("Dateityp nicht unterstützt.")
+        raise ValueError("Nur PDF, DOCX und TXT erlaubt.")
 
     if not any(pages):
         raise ValueError("Kein lesbarer Text gefunden.")
@@ -131,12 +166,12 @@ def extract_pages(filename, data):
 
 def create_chunks(pages):
     chunks = []
-    for page_number, page in enumerate(pages, 1):
+    for number, page in enumerate(pages, 1):
         for start in range(0, len(page), 1500):
-            part = page[start:start + 1700].strip()
+            part = page[start:start + 1500].strip()
             if part:
                 chunks.append({
-                    "page_number": page_number,
+                    "page_number": number,
                     "content": part,
                 })
     return chunks
@@ -155,40 +190,37 @@ def search_chunks(question, docs):
         "GET",
         "/rest/v1/rail_chunks?select=document_id,page_number,content",
     )
-    chunks = response.json()
+
     words = set(re.findall(r"[a-zäöüß0-9]{3,}", question.lower()))
     doc_map = {doc["id"]: doc for doc in docs}
-    results = []
+    hits = []
 
-    for chunk in chunks:
-        text = chunk["content"].lower()
-        score = sum(text.count(word) for word in words)
-        if score > 0 and chunk["document_id"] in doc_map:
-            results.append((score, chunk, doc_map[chunk["document_id"]]))
+    for chunk in response.json():
+        content = chunk["content"].lower()
+        score = sum(content.count(word) for word in words)
+        doc = doc_map.get(chunk["document_id"])
+        if score > 0 and doc:
+            hits.append((score, chunk, doc))
 
-    results.sort(key=lambda item: item[0], reverse=True)
-    return results[:5]
-
-
-if "access_token" not in st.session_state:
-    st.session_state.access_token = None
-
-if "refresh_token" not in st.session_state:
-    st.session_state.refresh_token = None
-
-if "user_id" not in st.session_state:
-    st.session_state.user_id = None
+    hits.sort(key=lambda item: item[0], reverse=True)
+    return hits[:5]
 
 
-if not st.session_state.access_token:
+# ==========================================
+# ANMELDUNG
+# ==========================================
+
+user = current_user()
+
+if user is None:
+    clear_session()
     st.subheader("Anmelden")
 
-    with st.form("login"):
+    with st.form("login_form"):
         email = st.text_input("E-Mail-Adresse")
         password = st.text_input("Passwort", type="password")
         submit = st.form_submit_button("Anmelden")
 
-    
     if submit:
         try:
             data = login(email.strip(), password)
@@ -200,79 +232,108 @@ if not st.session_state.access_token:
         except requests.HTTPError as exc:
             status = exc.response.status_code
             try:
-                error_code = exc.response.json().get("error_code", "")
+                code = exc.response.json().get("error_code", "")
             except ValueError:
-                error_code = ""
+                code = ""
 
-            st.error(f"Supabase-Fehler: HTTP {status}")
-            if error_code:
-                st.code(error_code)
+            st.error(f"Anmeldung fehlgeschlagen: HTTP {status}")
+            if code:
+                st.code(code)
 
         except requests.RequestException:
-            st.error("Verbindung zu Supabase fehlgeschlagen.")
+            st.error("Supabase ist momentan nicht erreichbar.")
 
+    # Wichtig: Keine App-Inhalte ohne Anmeldung
+    st.stop()
+
+
+# ==========================================
+# AB HIER NUR ANGEMELDETE BENUTZER
+# ==========================================
 
 with st.sidebar:
     st.success("Angemeldet")
+    st.caption(user.get("email", ""))
+
     if st.button("Abmelden"):
-        st.session_state.access_token = None
-        st.session_state.refresh_token = None
-        st.session_state.user_id = None
+        clear_session()
         st.rerun()
 
 st.warning(
     "Nur freigegebene technische Unterlagen verwenden. "
-    "Keine verbindlichen Prüfanweisungen durch KI ersetzen."
+    "KI-Antworten ersetzen keine gültigen Prüfanweisungen."
 )
 
-tab1, tab2, tab3 = st.tabs([
+tab_docs, tab_ai, tab_info = st.tabs([
     "📚 Dokumente",
     "🤖 KI-Assistent",
     "ℹ️ Info",
 ])
 
-with tab1:
+
+# ==========================================
+# DOKUMENTENBIBLIOTHEK
+# ==========================================
+
+with tab_docs:
     st.subheader("Technische Manuals")
 
-    with st.form("upload"):
+    with st.form("upload_form"):
         file = st.file_uploader(
-            "Dokument hochladen",
+            "Dokument auswählen",
             type=["pdf", "docx", "txt"],
         )
         vehicle = st.text_input("Fahrzeug / Baureihe")
         revision = st.text_input("Revision", value="Unbekannt")
         upload = st.form_submit_button("Dauerhaft speichern")
 
-    if upload and file:
-        try:
-            data = file.getvalue()
-
-            if len(data) > 8 * 1024 * 1024:
-                raise ValueError("Maximal 8 MB je Datei.")
-
-            pages = extract_pages(file.name, data)
-            chunks = create_chunks(pages)
-
-            doc_id = str(uuid.uuid4())
-            path = f"{st.session_state.user_id}/{doc_id}/{file.name}"
-
-            storage_response = authorized_request(
-                "POST",
-                f"/storage/v1/object/{BUCKET}/{path}",
-                data=data,
-                content_type=file.type or "application/octet-stream",
-            )
-
-            metadata = {
-                "id": doc_id,
-                "filename": file.name,
-                "vehicle": vehicle or "Allgemein",
-                "revision": revision or "Unbekannt",
-                "storage_path": path,
-                "created_by": st.session_state.user_id,
-            }
-
+    if upload:
+        if file is None:
+            st.warning("Bitte zuerst eine Datei auswählen.")
+        else:
             try:
+                data = file.getvalue()
+
+                if len(data) > 8 * 1024 * 1024:
+                    raise ValueError("Maximal 8 MB je Datei.")
+
+                pages = extract_pages(file.name, data)
+                chunks = create_chunks(pages)
+
+                doc_id = str(uuid.uuid4())
+                safe_name = re.sub(
+                    r"[^a-zA-Z0-9._-]", "_", file.name
+                )
+                path = (
+                    f"{st.session_state.user_id}/"
+                    f"{doc_id}/{safe_name}"
+                )
+
+                mime = {
+                    "pdf": "application/pdf",
+                    "docx": (
+                        "application/vnd.openxmlformats-officedocument."
+                        "wordprocessingml.document"
+                    ),
+                    "txt": "text/plain",
+                }[file.name.lower().rsplit(".", 1)[-1]]
+
+                authorized_request(
+                    "POST",
+                    f"/storage/v1/object/{BUCKET}/{quote(path, safe='/')}",
+                    data=data,
+                    content_type=mime,
+                )
+
+                metadata = {
+                    "id": doc_id,
+                    "filename": file.name,
+                    "vehicle": vehicle or "Allgemein",
+                    "revision": revision or "Unbekannt",
+                    "storage_path": path,
+                    "created_by": st.session_state.user_id,
+                }
+
                 authorized_request(
                     "POST",
                     "/rest/v1/rail_documents",
@@ -289,72 +350,95 @@ with tab1:
                         "/rest/v1/rail_chunks",
                         json=rows,
                     )
-            except Exception:
-                st.error(
-                    "Datei gespeichert, aber Datenbankeintrag "
-                    "nicht vollständig. Bitte Administrator informieren."
-                )
-                raise
 
-            st.success("Dokument dauerhaft gespeichert.")
-            st.rerun()
+                st.success("Dokument gespeichert.")
+                st.rerun()
 
-        except Exception as exc:
-            st.error(f"Upload fehlgeschlagen: {exc}")
+            except (requests.RequestException, ValueError) as exc:
+                st.error(f"Upload fehlgeschlagen: {exc}")
+
+    st.divider()
+    st.subheader("Gespeicherte Dokumente")
 
     try:
         docs = documents()
 
         if not docs:
-            st.info("Noch keine Manuals vorhanden.")
+            st.info("Noch keine Dokumente vorhanden.")
 
         for doc in docs:
             with st.expander(doc["filename"]):
                 st.write("Fahrzeug:", doc["vehicle"])
                 st.write("Revision:", doc["revision"])
 
-                if st.button("Datei herunterladen", key="get_" + doc["id"]):
+                if st.button(
+                    "Datei zum Download vorbereiten",
+                    key="get_" + doc["id"],
+                ):
                     try:
                         response = authorized_request(
                             "GET",
-                            f"/storage/v1/object/authenticated/{BUCKET}/{doc['storage_path']}",
+                            "/storage/v1/object/authenticated/"
+                            + BUCKET + "/"
+                            + quote(doc["storage_path"], safe="/"),
                         )
-                        st.download_button(
-                            "Download starten",
-                            data=response.content,
-                            file_name=doc["filename"],
-                            key="download_" + doc["id"],
-                        )
-                    except Exception as exc:
-                        st.error(str(exc))
+                        st.session_state[
+                            "file_" + doc["id"]
+                        ] = response.content
+                    except requests.RequestException:
+                        st.error("Datei konnte nicht geladen werden.")
+
+                prepared = st.session_state.get(
+                    "file_" + doc["id"]
+                )
+                if prepared is not None:
+                    st.download_button(
+                        "Herunterladen",
+                        data=prepared,
+                        file_name=doc["filename"],
+                        key="download_" + doc["id"],
+                    )
 
                 if doc["created_by"] == st.session_state.user_id:
-                    if st.button("Dokument löschen", key="del_" + doc["id"]):
+                    if st.button(
+                        "Dokument löschen",
+                        key="del_" + doc["id"],
+                    ):
                         try:
                             authorized_request(
                                 "DELETE",
-                                f"/storage/v1/object/{BUCKET}/{doc['storage_path']}",
+                                "/storage/v1/object/"
+                                + BUCKET + "/"
+                                + quote(doc["storage_path"], safe="/"),
                             )
                             authorized_request(
                                 "DELETE",
-                                f"/rest/v1/rail_documents?id=eq.{doc['id']}",
+                                "/rest/v1/rail_documents?id=eq."
+                                + doc["id"],
+                            )
+                            st.session_state.pop(
+                                "file_" + doc["id"], None
                             )
                             st.success("Dokument gelöscht.")
                             st.rerun()
-                        except Exception as exc:
-                            st.error(str(exc))
+                        except requests.RequestException:
+                            st.error("Löschen fehlgeschlagen.")
 
-    except Exception as exc:
-        st.error(f"Dokumente konnten nicht geladen werden: {exc}")
+    except requests.RequestException:
+        st.error("Dokumentenliste konnte nicht geladen werden.")
 
 
-with tab2:
+# ==========================================
+# KI-ASSISTENT
+# ==========================================
+
+with tab_ai:
     st.subheader("Technischer KI-Assistent")
 
     question = st.text_area("Deine technische Frage")
 
     use_ai = st.checkbox(
-        "Passende Dokumentenauszüge an OpenAI senden",
+        "Dokumentenauszüge an OpenAI senden",
         value=False,
     )
 
@@ -369,21 +453,23 @@ with tab2:
                 if not hits:
                     st.info("Keine passenden Fundstellen gefunden.")
                 else:
-                    source_text = []
+                    sources = []
 
                     for index, (_, chunk, doc) in enumerate(hits, 1):
                         label = (
                             f"[{index}] {doc['filename']} "
-                            f"– Seite {chunk['page_number']}"
+                            f"– Seite/Abschnitt {chunk['page_number']}"
                         )
-                        source_text.append(
+                        sources.append(
                             label + "\n" + chunk["content"]
                         )
                         with st.expander(label):
                             st.write(chunk["content"])
 
                     if use_ai:
-                        openai_key = st.secrets.get("OPENAI_API_KEY", "")
+                        openai_key = st.secrets.get(
+                            "OPENAI_API_KEY", ""
+                        )
 
                         if not openai_key:
                             st.warning("OpenAI-Key fehlt.")
@@ -395,34 +481,41 @@ with tab2:
                             answer = client.responses.create(
                                 model="gpt-4.1-mini",
                                 instructions=(
-                                    "Du bist ein technischer Assistent für "
-                                    "Schienenfahrzeuge. Verwende ausschließlich "
-                                    "die bereitgestellten Quellen. "
-                                    "Nenne Dokument und Seitenzahl. "
+                                    "Du bist ein technischer Assistent "
+                                    "für Schienenfahrzeuge. "
+                                    "Verwende nur die Quellen. "
+                                    "Nenne Dokument und Fundstelle. "
                                     "Erfinde keine Sollwerte oder Prüfschritte. "
-                                    "Bei fehlender Grundlage sage dies klar."
+                                    "Kennzeichne fehlende Informationen."
                                 ),
                                 input=(
                                     "Frage:\n" + question +
                                     "\n\nQuellen:\n" +
-                                    "\n\n".join(source_text)[:12000]
+                                    "\n\n".join(sources)[:12000]
                                 ),
                                 max_output_tokens=800,
                             )
 
                             st.markdown(answer.output_text)
 
-            except Exception as exc:
-                st.error(f"Suche fehlgeschlagen: {exc}")
+            except Exception:
+                st.error(
+                    "Die Suche konnte nicht abgeschlossen werden."
+                )
 
 
-with tab3:
-    st.subheader("RailTecSol 0.4")
-    st.write("Private Dokumentenbibliothek mit Supabase.")
-    st.write("Benutzerkonten werden in Supabase verwaltet.")
-    st.write("Dokumente sind für angemeldete Teammitglieder sichtbar.")
-    st.write("Nur der jeweilige Uploader kann seine Dateien löschen.")
+# ==========================================
+# INFORMATIONEN
+# ==========================================
+
+with tab_info:
+    st.subheader("RailTecSol 0.4.1")
+    st.write("Private Wissensdatenbank für Schienenfahrzeuge.")
+    st.write("Anmeldung über Supabase Auth.")
+    st.write("Dauerhafte Dokumentenspeicherung in Supabase.")
+    st.write("Gemeinsamer Dokumentenzugriff für Teammitglieder.")
+    st.write("KI-Auswertung nur nach ausdrücklicher Aktivierung.")
     st.info(
-        "Die bisherige Störungserfassung aus Version 0.3 "
-        "ist in dieser Version noch nicht enthalten."
+        "Die frühere Störungserfassung ist in dieser "
+        "Version noch nicht enthalten."
     )
